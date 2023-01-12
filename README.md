@@ -1,10 +1,24 @@
-Ce projet a été conçu pour une plateforme Linux, pour pouvoir compiler et exécuter le projet sous Windows il faut modifier le Makefile et ré-importer les packages réseau adaptés dans le code
+# C-Monitoring 
 
-Pour complier l'ensemble du programme il faut utiliser la commande :
+This project is a monitoring tool designed for Linux platforms. It allows you to monitor different aspects of your system, such as network usage and performance.
 
+## Getting Started
+
+To compile and run the project on a Linux system, simply run the following commands:
+```
 make
-
-puis pour executer , lancez :
-
 ./bin/executable
+```
+
+If you wish to run the project on a Windows system, you will need to modify the Makefile and re-import the necessary network packages in the code.
+
+## Features
+
+- Monitor network usage
+- Monitor system performance
+- Customizable settings
+
+## Built With
+
+- C programming language
 
