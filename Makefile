@@ -1,42 +1,31 @@
-srcdir = src/
-bindir = bin/
-savedir = save/
-docdir = doc/
-SRC = $(wildcard $(srcdir)*.c)
+srcdir  = src/
+bindir  = bin/
+
+SRC  = $(wildcard $(srcdir)*.c)
 HEAD = $(wildcard $(srcdir)*.h)
-OBJ = $(subst $(srcdir),$(bindir),$(SRC:.c=.o))
-RM = rm -ri $(bindir)*.o
-CC = gcc -pthread -Wall -Wextra
+OBJ  = $(patsubst $(srcdir)%.c,$(bindir)%.o,$(SRC))
+
+CC      = gcc
+CFLAGS  = -std=c11 -Wall -Wextra -O2 -pthread
+LDFLAGS = -pthread
+LDLIBS  = -lm
+
 PROG = executable
-CP = cp $(srcdir)*.c $(savedir) ; cp $(srcdir)*.h $(savedir)
 
+.PHONY: all clean
 
-all : $(bindir)$(PROG) save
+all: $(bindir)$(PROG)
 
+# relink only when an object file actually changed
 $(bindir)$(PROG): $(OBJ)
-#on ne refait l'édition des liens que si un fichier objet à été recompilé
-	$(CC) -o $@ $^ -lm
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
-$(bindir)%.o : $(srcdir)%.c
-#on ne recompile chaque fichier objet que si il est plus récent que l'ancien
-	$(CC) -o $@ -c $< -lm
+# rebuild an object file if its source or any header changed
+$(bindir)%.o: $(srcdir)%.c $(HEAD) | $(bindir)
+	$(CC) $(CFLAGS) -c $< -o $@
 
-
-.PHONY:clean save
-
-restore:
-#on régénere les fichiers sources et les entêtes sauvegardés dans save dans le dossier src
-	cp $(savedir)*.c $(srcdir)
-	cp $(savedir)*.h $(srcdir)
-
-give:
-#décompresse une archive nécessaire à la génération du projet
-	tar zxvf brillant_corentin.tar.gz
-
-save : 
-#on sauvegarde les fichiers sources du projet
-	$(CP)
+$(bindir):
+	mkdir -p $(bindir)
 
 clean:
-# on supprime tous les fichiers objets si on le désire
-	$(RM)
+	rm -f $(bindir)*.o $(bindir)$(PROG)

@@ -1,130 +1,156 @@
 /*!
 \file monitor.c
-\version v1
-\date Vendredi 19 mars 2020
+\brief TCP server that splits the [0, TASK_RANGE_MAX] summation across
+       calculator clients, tracks their progress and reassigns any task
+       whose calculator stops reporting.
 */
-
-/*
-The monitor of the project
-*/
-
-#ifndef DEF_FICHIER_H
-#define DEF_FICHIER_H
 
 #include <stdio.h>
-#include <pthread.h>
 #include <stdlib.h>
-#include <unistd.h>
-#include <sys/socket.h>
 #include <string.h>
-#include <arpa/inet.h> 
-#include <time.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <semaphore.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include "common.h"
 #include "structures.h"
 #include "thread_functions.h"
+#include "monitor.h"
 
-#endif
+/* Prompts until the user enters a task count we can actually work with;
+   the original version trusted raw scanf() output and could end up
+   indexing the task array with a negative count on bad input. */
+static int read_nb_processus(void) {
+    int nb_processus_max = 0;
 
-#define N 1000
+    while (1) {
+        printf("Veuillez indiquer le nombre de processus que vous souhaitez utiliser (1-%d) : \n", MAX_CALCULATORS);
 
-/*
-int main(int argc, char const *argv[])
-{
-	int flag = 1;
-	monitor(&flag);
-	return 0;
+        int result = scanf("%d", &nb_processus_max);
+        int c;
+        while ((c = getchar()) != '\n' && c != EOF) {
+            /* discard the rest of the line, including a bad token */
+        }
+
+        if (result == 1 && nb_processus_max > 0 && nb_processus_max <= MAX_CALCULATORS) {
+            return nb_processus_max;
+        }
+        fprintf(stderr, "Merci d'entrer un entier entre 1 et %d.\n", MAX_CALCULATORS);
+    }
 }
-*/
-void* monitor(void* arg)
-{
-	int nb_processus_max = 0;
-    struct sockaddr_in echoServAddr; 	  			/* Local address */
-    unsigned short echoServPort=4206;     			/* Server port */
-	int sockfd;										/* the socket of the monitor */
-	int global_sum = 0 ;
-	tab_cell* tab;									/* we will share the main task between sub tasks, each element of tab contains information about a sub-task progress */
-	int* flag = (int*)arg;
 
-	/*let user chose the number of processus to use*/
-	printf("Veuillez indiquer le nombre de processus que vous souhaitez utiliser : \n");
-	if (scanf("%u",&nb_processus_max)==0){
-		perror("Problème avec la saisie du nombre de processus");
-	};
+static void print_report(int nb_processus_max, int global_sum, const task_cell *tasks) {
+    printf("Nombre de processus calculateurs : %d\n", nb_processus_max);
+    printf("Somme totale partielle calculee : %d\n", global_sum);
+    for (int i = 0; i < nb_processus_max; i++) {
+        printf("--PROCESSUS %d\n", i);
+        printf("--somme partielle calculee : %d \n", tasks[i].partial_sum);
+        printf("--Temps : %ld \n", (long)tasks[i].elapsed_time);
+        printf("--Etat : %d \n", tasks[i].status);
+    }
+}
 
-	/* Create socket for incoming connections */
-	if ((sockfd = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0){
-        perror("socket() failed");
-    	exit(1);
-	}
+void *monitor(void *arg) {
+    monitor_init_param *init = (monitor_init_param *)arg;
+    volatile int *flag = init->flag;
+    struct sockaddr_in monitor_addr;
+    int sockfd;
+    int global_sum = 0;
+    pthread_mutex_t state_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-    /* Construct local address structure */
-    memset(&echoServAddr, 0, sizeof(echoServAddr));   /* Zero out structure */
-    echoServAddr.sin_family = AF_INET;                /* Internet address family */
-    echoServAddr.sin_addr.s_addr = htonl(INADDR_ANY); /* Any incoming interface */
-    echoServAddr.sin_port = htons(echoServPort);      /* Local port */
+    int nb_processus_max = read_nb_processus();
 
-    /* Bind to the local address */
-    if (bind(sockfd, (struct sockaddr *) &echoServAddr, sizeof(echoServAddr)) < 0){
-        perror("bind() failed");
-    	exit(1);
+    if ((sockfd = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0) {
+        die("socket() failed");
     }
 
-    /* Mark the socket so it will listen for incoming connections */
-    if (listen(sockfd, nb_processus_max) < 0){
-        perror("listen() failed");
-        exit(1);
+    /* Lets the port be reused immediately after a previous run instead of
+       sitting in TIME_WAIT and failing the next bind(). */
+    int reuse = 1;
+    setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+
+    memset(&monitor_addr, 0, sizeof(monitor_addr));
+    monitor_addr.sin_family = AF_INET;
+    monitor_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    monitor_addr.sin_port = htons(MONITOR_PORT);
+
+    if (bind(sockfd, (struct sockaddr *)&monitor_addr, sizeof(monitor_addr)) < 0) {
+        die("bind() failed");
+    }
+    if (listen(sockfd, nb_processus_max) < 0) {
+        die("listen() failed");
     }
 
-	/* initialise the tab */
-	tab = malloc(nb_processus_max*sizeof(tab_cell));
+    /* We are now ready to accept calculators: let the launcher know so it
+       stops waiting and starts offering to spawn them. */
+    sem_post(init->ready);
 
-	/* we share the work between all the processus */
-	for (int i = 0; i < nb_processus_max-1; ++i)
-	{
-		/* default process socket for each case is nb_processus_max */
-		tab_cell cell = {&global_sum,i,0,nb_processus_max,i*(N/(nb_processus_max)),(i+1)*(N/(nb_processus_max)),0,0};
-		*(tab+i) = cell;
-	}
-	tab_cell cell = {&global_sum,nb_processus_max-1,0,nb_processus_max,(nb_processus_max-1)*(N/(nb_processus_max)),N+1,0,0};
-	*(tab+nb_processus_max-1) = cell;
+    task_cell *tasks = malloc((size_t)nb_processus_max * sizeof(task_cell));
+    if (tasks == NULL) {
+        die("malloc() for tasks failed");
+    }
 
+    /* Split [0, TASK_RANGE_MAX] into nb_processus_max contiguous chunks;
+       the last chunk absorbs whatever remainder the division leaves. */
+    int chunk = TASK_RANGE_MAX / nb_processus_max;
+    for (int i = 0; i < nb_processus_max; ++i) {
+        tasks[i] = (task_cell){
+            .global_sum = &global_sum,
+            .mutex = &state_mutex,
+            .process_rank = i,
+            .partial_sum = 0,
+            .socket_process = -1,
+            .begin_index = i * chunk,
+            .end_index = (i == nb_processus_max - 1) ? (TASK_RANGE_MAX + 1) : (i + 1) * chunk,
+            .status = 0,
+            .elapsed_time = 0,
+        };
+    }
 
-	/* we create a thread to manage the different processus */
-	pthread_t manager_thread;
-	process_manager_param param = {&global_sum,nb_processus_max,sockfd,tab};
-	if (pthread_create(&manager_thread, NULL, process_manager,&param)<0){
-		fprintf(stderr, "pthread_create error for manager thread\n");
-	}
+    pthread_t manager_thread, report_thread;
 
-	/* we create an other to show a regular report about the system */
-	pthread_t report_thread;
-	report_system_param param2 = {&global_sum,nb_processus_max,tab};
-	if (pthread_create(&report_thread, NULL, report_system, &param2)<0){
-		fprintf(stderr, "pthread_create error for report thread\n");
-	}
+    process_manager_param manager_param = {
+        .global_sum = &global_sum,
+        .mutex = &state_mutex,
+        .nb_processus_max = nb_processus_max,
+        .sockfd = sockfd,
+        .tasks = tasks,
+    };
+    if (pthread_create(&manager_thread, NULL, process_manager, &manager_param) != 0) {
+        fprintf(stderr, "pthread_create error for manager thread\n");
+    }
 
-	/* we wait for the thread to end before to close the monitor */
-	pthread_join(manager_thread,NULL);
+    report_system_param report_param = {
+        .global_sum = &global_sum,
+        .mutex = &state_mutex,
+        .nb_processus_max = nb_processus_max,
+        .tasks = tasks,
+    };
+    if (pthread_create(&report_thread, NULL, report_system, &report_param) != 0) {
+        fprintf(stderr, "pthread_create error for report thread\n");
+    }
 
-	/* close the socket */
-	close(sockfd);
+    /* Wait for every task to be marked done before tearing anything down. */
+    pthread_join(manager_thread, NULL);
 
-	/* we don't need the report thread anymore */
-	pthread_cancel(report_thread);
-	printf("Nombre de processus calculateurs : %d\n", nb_processus_max); /* number of processù*/
-	printf("Somme totale partielle calculée : %d\n", global_sum); /*global sum calculated*/
-	for (int i = 0; i < nb_processus_max; i++) /* for each process, print sum and time*/
-	{
-		printf("--PROCESSUS %d\n",i);
-		printf("--somme partielle calculée : %d \n",tab[i].partial_sum);
-		printf("--Temps : %ld \n",tab[i].time);
-		printf("--Etat : %d \n",tab[i].status);
-	}
+    close(sockfd);
 
-	/*free the memory*/
-	free(tab);
+    /* report_system() only ever locks the mutex around a sleep(3), which
+       is a cancellation point, so cancelling it here can never leave the
+       mutex held. */
+    pthread_cancel(report_thread);
+    pthread_join(report_thread, NULL);
 
-	printf("Calcul completed\n");
+    pthread_mutex_lock(&state_mutex);
+    print_report(nb_processus_max, global_sum, tasks);
+    pthread_mutex_unlock(&state_mutex);
 
-	*flag = 0;
-	pthread_exit(0);
+    free(tasks);
+    pthread_mutex_destroy(&state_mutex);
+
+    printf("Calcul termine\n");
+
+    *flag = 0;
+    pthread_exit(NULL);
 }

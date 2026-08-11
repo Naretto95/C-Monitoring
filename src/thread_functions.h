@@ -1,31 +1,25 @@
 /*!
 \file thread_functions.h
-\version v1
-\date Vendredi 19 mars 2020
+\brief Worker-thread routines used by the monitor.
 */
 
-/*
-The declarations of functions for the different thread routines
-*/
+#ifndef THREAD_FUNCTIONS_H
+#define THREAD_FUNCTIONS_H
 
-#ifndef DEF_FICHIER_H
-#define DEF_FICHIER_H
+/*! Periodically kills a random calculator's report thread to simulate
+    failures. arg is an evil_monkey_param*. */
+void *evil_monkey(void *arg);
 
-#include <stdio.h>
-#include <pthread.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <sys/socket.h>
-#include <string.h>
-#include <arpa/inet.h> 
-#include <time.h>
-#include "structures.h"
+/*! Accepts incoming calculator connections and assigns them to free task
+    slots until every task is done. arg is a process_manager_param*. */
+void *process_manager(void *arg);
 
-#endif
+/*! Prints a periodic snapshot of the monitor's state. arg is a
+    report_system_param*. */
+void *report_system(void *arg);
 
-void* CreateTCPClientSocket(void* arg);
-void* monitor(void* arg);
-void* evil_monkey(void* arg);
-void* process_manager(void* arg);
-void* report_system(void* arg);
-void* thread_i_function(void *arg);
+/*! Owns the exchange with a single calculator for the lifetime of one
+    task assignment. arg is a task_cell*. */
+void *thread_i_function(void *arg);
+
+#endif /* THREAD_FUNCTIONS_H */
